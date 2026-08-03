@@ -1,10 +1,40 @@
 import os
 from typing import List, Dict, Any
 
-from langchain.embeddings import OpenAIEmbeddings, HuggingFaceEmbeddings
-from langchain.vectorstores import Pinecone as LangPinecone, FAISS
-from langchain.schema import Document
-from langchain.llms import OpenAI
+# Import embeddings with fallbacks for different langchain versions
+try:
+    from langchain.embeddings.openai import OpenAIEmbeddings
+except Exception:
+    try:
+        from langchain.embeddings import OpenAIEmbeddings
+    except Exception:
+        OpenAIEmbeddings = None
+
+try:
+    from langchain.embeddings.huggingface import HuggingFaceEmbeddings
+except Exception:
+    try:
+        from langchain.embeddings import HuggingFaceEmbeddings
+    except Exception:
+        HuggingFaceEmbeddings = None
+
+# Vectorstores and LLM
+try:
+    from langchain.vectorstores import Pinecone as LangPinecone, FAISS
+except Exception:
+    # older/newer langchain installations may structure vectorstores differently
+    from langchain.vectorstores import FAISS
+    LangPinecone = None
+
+try:
+    from langchain.schema import Document
+except Exception:
+    Document = None
+
+try:
+    from langchain.llms import OpenAI
+except Exception:
+    OpenAI = None
 
 import pinecone
 
@@ -18,15 +48,27 @@ class RAGService:
         self.pinecone_index = os.getenv("PINECONE_INDEX", "deeepr-index")
 
         # Embeddings: prefer OpenAI if available, else use a HuggingFace sentence-transformer model
-        if self.openai_key:
-            self.embeddings = OpenAIEmbeddings()
-        else:
-            # fallback: local sentence-transformers model
-            self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+        self.embeddings = None
+        if self.openai_key and OpenAIEmbeddings is not None:
+            try:
+                self.embeddings = OpenAIEmbeddings()
+            except Exception as e:
+                print("Warning: OpenAIEmbeddings init failed:", e)
+                self.embeddings = None
+
+        if self.embeddings is None:
+            if HuggingFaceEmbeddings is not None:
+                try:
+                    self.embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+                except Exception as e:
+                    print("Warning: HuggingFaceEmbeddings init failed:", e)
+                    self.embeddings = None
+            else:
+                print("No embeddings implementation available. Please install a compatible langchain and sentence-transformers.")
 
         # Vector store: Pinecone if configured, else FAISS local (expects an index created by ingest)
         self.vs = None
-        if self.pinecone_key:
+        if self.pinecone_key and LangPinecone is not None:
             try:
                 pinecone.init(api_key=self.pinecone_key, environment=self.pinecone_env)
                 # Connect to existing index (created during ingestion)
@@ -48,8 +90,12 @@ class RAGService:
 
         # LLM: prefer OpenAI if API key present
         self.llm = None
-        if self.openai_key:
-            self.llm = OpenAI(temperature=0)
+        if self.openai_key and OpenAI is not None:
+            try:
+                self.llm = OpenAI(temperature=0)
+            except Exception as e:
+                print("Warning: OpenAI LLM init failed:", e)
+                self.llm = None
 
     def is_ready(self) -> bool:
         return self.vs is not None
@@ -65,10 +111,10 @@ class RAGService:
         sources = []
         context_parts = []
         for i, d in enumerate(docs, start=1):
-            md = d.metadata if hasattr(d, "metadata") else {}
+            md = getattr(d, "metadata", None) or {}
             page = md.get("page") if md else None
             docname = md.get("doc") if md else None
-            snippet = d.page_content if hasattr(d, "page_content") else str(d)
+            snippet = getattr(d, "page_content", None) or str(d)
             sources.append({"doc": docname, "page": page, "snippet": snippet})
             context_parts.append(f"Source {i} — doc: {docname} page: {page}\n{snippet}\n")
 

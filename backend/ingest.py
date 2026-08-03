@@ -12,11 +12,31 @@ from pathlib import Path
 import pdfplumber
 from tqdm import tqdm
 
-from langchain.embeddings import OpenAIEmbeddings, HuggingFaceEmbeddings
-from langchain.vectorstores import Pinecone as LangPinecone, FAISS
+# Import embeddings with fallbacks
+try:
+    from langchain.embeddings.openai import OpenAIEmbeddings
+except Exception:
+    try:
+        from langchain.embeddings import OpenAIEmbeddings
+    except Exception:
+        OpenAIEmbeddings = None
+
+try:
+    from langchain.embeddings.huggingface import HuggingFaceEmbeddings
+except Exception:
+    try:
+        from langchain.embeddings import HuggingFaceEmbeddings
+    except Exception:
+        HuggingFaceEmbeddings = None
+
+# Vectorstores
+try:
+    from langchain.vectorstores import Pinecone as LangPinecone, FAISS
+except Exception:
+    from langchain.vectorstores import FAISS
+    LangPinecone = None
 
 import pinecone
-
 
 DEFAULT_EMBED_MODEL = "all-MiniLM-L6-v2"
 
@@ -51,10 +71,23 @@ def main(pdf_dir: str):
     INDEX_NAME = os.getenv("PINECONE_INDEX", "deeepr-index")
 
     # Choose embeddings
-    if OPENAI_KEY:
-        embeddings = OpenAIEmbeddings()
-    else:
-        embeddings = HuggingFaceEmbeddings(model_name=DEFAULT_EMBED_MODEL)
+    embeddings = None
+    if OPENAI_KEY and OpenAIEmbeddings is not None:
+        try:
+            embeddings = OpenAIEmbeddings()
+        except Exception as e:
+            print("Warning: OpenAIEmbeddings init failed:", e)
+            embeddings = None
+
+    if embeddings is None:
+        if HuggingFaceEmbeddings is not None:
+            try:
+                embeddings = HuggingFaceEmbeddings(model_name=DEFAULT_EMBED_MODEL)
+            except Exception as e:
+                print("Warning: HuggingFaceEmbeddings init failed:", e)
+                embeddings = None
+        else:
+            raise RuntimeError("No embeddings available. Install compatible langchain + sentence-transformers.")
 
     all_texts = []
     metadatas = []
@@ -72,7 +105,7 @@ def main(pdf_dir: str):
         return
 
     # Upsert to Pinecone or build FAISS
-    if PINECONE_API_KEY:
+    if PINECONE_API_KEY and LangPinecone is not None:
         pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
         print(f"Upserting {len(all_texts)} chunks to Pinecone index '{INDEX_NAME}' (this will create the index if needed)")
         # LangChain helper will create or connect
@@ -94,6 +127,8 @@ def main(pdf_dir: str):
 
 
 if __name__ == "__main__":
+    import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--pdfs", required=True, help="Directory with PDF files")
     args = parser.parse_args()
