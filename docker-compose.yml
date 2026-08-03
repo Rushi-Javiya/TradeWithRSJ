@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY
+      - PINECONE_API_KEY
+      - PINECONE_ENV
+      - PINECONE_INDEX
+    volumes:
+      - ./backend:/app
+
+  # optional local vector DB for testing
+  # qdrant:
+  #   image: qdrant/qdrant
+  #   ports:
+  #     - "6333:6333"
