@@ -1,0 +1,8 @@
+# Backend development / CI dependencies
+black
+isort
+pytest
+pytest-asyncio
+pre-commit
+ruff
+mypy

@@ -7,5 +7,13 @@ langchain
 openai
 pinecone-client
 sentence-transformers
+torch
 pdfplumber
+pytesseract
+boto3
 tqdm
+gunicorn
+
+# Optional / useful utilities
+python-multipart
+fastapi-utils
