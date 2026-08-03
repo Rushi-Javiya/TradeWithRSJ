@@ -1,21 +1,24 @@
 """
-Simple ingestion script (stub).
-- Parses PDFs with pdfplumber
-- Chunks text and creates embeddings
-- Upserts to Pinecone (or other vector DB)
+Updated ingestion pipeline using LangChain embeddings and vectorstores.
+- If PINECONE_API_KEY is set, upserts into Pinecone.
+- Else, builds a FAISS index locally and saves to ./vector_store/faiss_index
 
-Run: python ingest.py --pdfs ./sample_papers
+Usage: python ingest.py --pdfs ./sample_papers
 """
 
 import os
 import argparse
 from pathlib import Path
 import pdfplumber
-from sentence_transformers import SentenceTransformer
-import pinecone
 from tqdm import tqdm
 
-EMBED_MODEL = "all-MiniLM-L6-v2"  # sentence-transformers model for local testing
+from langchain.embeddings import OpenAIEmbeddings, HuggingFaceEmbeddings
+from langchain.vectorstores import Pinecone as LangPinecone, FAISS
+
+import pinecone
+
+
+DEFAULT_EMBED_MODEL = "all-MiniLM-L6-v2"
 
 
 def extract_text(pdf_path: Path):
@@ -23,60 +26,71 @@ def extract_text(pdf_path: Path):
     with pdfplumber.open(pdf_path) as pdf:
         for i, page in enumerate(pdf.pages, start=1):
             text = page.extract_text() or ""
-            texts.append((i, text))
+            if text.strip():
+                texts.append({"doc": pdf.name, "page": i, "text": text})
     return texts
 
 
-def chunk_pages(pages, chunk_size=500, overlap=50):
-    """Chunk by approximate token/word counts — simple implementation."""
+def chunk_text(text, chunk_size=500, overlap=50):
+    words = text.split()
     chunks = []
-    for page_num, text in pages:
-        words = text.split()
-        i = 0
-        while i < len(words):
-            chunk_words = words[i:i+chunk_size]
-            chunks.append({
-                "page": page_num,
-                "text": " ".join(chunk_words)
-            })
-            i += chunk_size - overlap
+    i = 0
+    while i < len(words):
+        chunk_words = words[i : i + chunk_size]
+        chunks.append(" ".join(chunk_words))
+        i += chunk_size - overlap
     return chunks
 
 
 def main(pdf_dir: str):
     pdf_dir = Path(pdf_dir)
-    model = SentenceTransformer(EMBED_MODEL)
 
-    # Init Pinecone if API key provided
+    OPENAI_KEY = os.getenv("OPENAI_API_KEY")
     PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
     PINECONE_ENV = os.getenv("PINECONE_ENV")
     INDEX_NAME = os.getenv("PINECONE_INDEX", "deeepr-index")
 
-    if PINECONE_API_KEY:
-        pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
-        if INDEX_NAME not in pinecone.list_indexes():
-            pinecone.create_index(INDEX_NAME, dimension=384)
-        index = pinecone.Index(INDEX_NAME)
+    # Choose embeddings
+    if OPENAI_KEY:
+        embeddings = OpenAIEmbeddings()
     else:
-        index = None
+        embeddings = HuggingFaceEmbeddings(model_name=DEFAULT_EMBED_MODEL)
+
+    all_texts = []
+    metadatas = []
 
     for pdf in pdf_dir.glob("*.pdf"):
         pages = extract_text(pdf)
-        chunks = chunk_pages(pages)
-        texts = [c["text"] for c in chunks]
-        embeds = model.encode(texts, show_progress_bar=True)
+        for p in pages:
+            chunks = chunk_text(p["text"])
+            for chunk in chunks:
+                all_texts.append(chunk)
+                metadatas.append({"doc": p["doc"], "page": p["page"]})
 
-        if index:
-            # upsert into pinecone
-            to_upsert = []
-            for i, emb in enumerate(embeds):
-                metadata = {"doc": pdf.name, "page": chunks[i]["page"]}
-                to_upsert.append((f"{pdf.stem}-{i}", emb.tolist(), metadata))
-            # Pinecone accepts batches
-            for i in range(0, len(to_upsert), 100):
-                batch = to_upsert[i:i+100]
-                index.upsert(batch)
-        print(f"Indexed {pdf.name} ({len(chunks)} chunks)")
+    if not all_texts:
+        print("No text extracted from PDFs in", pdf_dir)
+        return
+
+    # Upsert to Pinecone or build FAISS
+    if PINECONE_API_KEY:
+        pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENV)
+        print(f"Upserting {len(all_texts)} chunks to Pinecone index '{INDEX_NAME}' (this will create the index if needed)")
+        # LangChain helper will create or connect
+        try:
+            LangPinecone.from_texts(texts=all_texts, embedding=embeddings, index_name=INDEX_NAME)
+            print("Upsert to Pinecone completed.")
+        except Exception as e:
+            print("Failed to upsert to Pinecone:", e)
+    else:
+        # Build FAISS index locally
+        print(f"Building local FAISS index with {len(all_texts)} chunks")
+        try:
+            faiss_index = FAISS.from_texts(texts=all_texts, embedding=embeddings)
+            os.makedirs("./vector_store/faiss_index", exist_ok=True)
+            faiss_index.save_local("./vector_store/faiss_index")
+            print("Saved FAISS index to ./vector_store/faiss_index")
+        except Exception as e:
+            print("Failed to build FAISS index:", e)
 
 
 if __name__ == "__main__":

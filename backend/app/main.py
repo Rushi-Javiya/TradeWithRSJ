@@ -2,6 +2,8 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import os
 
+from services.rag import rag_service
+
 app = FastAPI(title="deeepr-mvp API")
 
 class QueryRequest(BaseModel):
@@ -13,13 +15,14 @@ async def health():
 
 @app.post("/query")
 async def query(req: QueryRequest):
-    """Placeholder RAG query endpoint.
-    Implements: retrieve top-k passages from vector DB and call LLM to generate answer.
-    """
+    """RAG query endpoint. Returns answer + sources."""
     q = req.query
-    # TODO: wire up LangChain/LlamaIndex pipeline here
-    # Example return format: {answer: str, sources: [{doc_id, page, snippet}]}
-    return {
-        "answer": "This is a stub response. Connect your RAG pipeline in backend/services/rag.py",
-        "sources": []
-    }
+    try:
+        if not rag_service.is_ready():
+            raise HTTPException(status_code=503, detail="Vector store not configured. Run ingest.py or set Pinecone keys.")
+        result = rag_service.query(q)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
